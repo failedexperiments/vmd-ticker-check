@@ -9,9 +9,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px
 from plotly.subplots import make_subplots
-from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -687,27 +685,33 @@ def main():
         return
     
     # Auto-run VMD Analysis when parameters change or data is loaded
-    # Always use the exact current data length with explicit slider position
-    current_data_len = len(analysis_data)
-    time_slider_pos = st.session_state.get('time_slider', time_end_idx) if enable_time_slider else None
+    # CRITICAL: Use actual current data (trimmed by slider) not analysis_data
+    current_data_len = len(data)  # This is the key - data is already trimmed by slider!
+    
+    if enable_time_slider and 'time_slider' in st.session_state:
+        time_slider_pos = st.session_state['time_slider']
+    else:
+        time_slider_pos = current_data_len - 1
+    
     current_vmd_params = (K, alpha, current_data_len, symbol.upper(), period, time_slider_pos)
     
-    # Force VMD recalculation when slider moves
+    # Force VMD recalculation when slider moves - check actual data length
+    stored_vmd_length = len(st.session_state.get('vmd_results', {}).get('modes', [[]])[0]) if 'vmd_results' in st.session_state else 0
     should_run_vmd = ('vmd_results' not in st.session_state or 
                       st.session_state.get('last_vmd_params') != current_vmd_params or
-                      len(st.session_state.get('vmd_results', {}).get('modes', [[]])[0]) != current_data_len)
+                      stored_vmd_length != current_data_len)
     
     if should_run_vmd:
         with st.spinner("Running VMD decomposition..."):
-            # Normalize prices for exact current data length
-            prices = analysis_data['Close'].values
-            normalized_prices = (prices - np.mean(prices)) / np.std(prices)
+            # Use the current trimmed data directly, not analysis_data which might be stale
+            current_prices = data['Close'].values  # data is already trimmed by slider
+            normalized_prices = (current_prices - np.mean(current_prices)) / np.std(current_prices)
             
             # Perform VMD
             modes, _, frequencies = vmd(normalized_prices, K=K, alpha=alpha)
             
-            # Force exact length match - no truncation issues
-            target_length = current_data_len
+            # Force exact length match to current data
+            target_length = len(data)  # Use actual current data length
             if len(modes[0]) != target_length:
                 # Pad or truncate modes to exact target length
                 adjusted_modes = []
@@ -724,7 +728,7 @@ def main():
                 modes = adjusted_modes
             
             normalized_prices = normalized_prices[:target_length]
-            dates = analysis_data.index[:target_length]
+            dates = data.index[:target_length]  # Use current data dates
             
             # Store results in session state
             st.session_state.vmd_results = {
@@ -732,11 +736,11 @@ def main():
                 'frequencies': frequencies,
                 'normalized_prices': normalized_prices,
                 'dates': dates,
-                'original_data': analysis_data.iloc[:target_length]
+                'original_data': data.iloc[:target_length]  # Use current data
             }
             st.session_state.last_vmd_params = current_vmd_params
             
-        st.success(f"✅ VMD analysis complete! Extracted {K} modes for {current_data_len} data points")
+        st.success(f"✅ VMD analysis complete! Extracted {K} modes for {len(data)} data points")
     
     # Display VMD results
     if 'vmd_results' in st.session_state:
