@@ -489,6 +489,187 @@ def create_predictive_analysis_chart(utilities, metrics, reconstruction_quality)
     return fig
 
 
+def calculate_progressive_vmd_deviations(data, K=4, alpha=2000, min_window=25):
+    """
+    Oblicza dewiacje ostatniej świecy OHLC od rekonstrukcji VMD 
+    dla każdego zakresu od początku do n.
+    """
+    results = []
+    
+    # Iteruj przez wszystkie możliwe zakresy
+    for n in range(min_window, len(data) + 1):
+        try:
+            # Pobierz dane od początku do n
+            current_data = data.iloc[:n]
+            prices = current_data['Close'].values
+            
+            # Normalizacja
+            mean_price = np.mean(prices)
+            std_price = np.std(prices)
+            normalized_prices = (prices - mean_price) / std_price
+            
+            # VMD decomposition
+            modes, _, frequencies = vmd(normalized_prices, K=K, alpha=alpha)
+            
+            # Rekonstrukcja
+            reconstruction = np.sum(modes, axis=0)
+            # Skalowanie z powrotem
+            scaled_reconstruction = reconstruction * std_price + mean_price
+            
+            # Ostatnia świeca z danych
+            last_candle = current_data.iloc[-1]
+            last_close = last_candle['Close']
+            last_open = last_candle['Open'] 
+            last_high = last_candle['High']
+            last_low = last_candle['Low']
+            
+            # Ostatnia wartość z rekonstrukcji VMD
+            last_vmd = scaled_reconstruction[-1]
+            
+            # Oblicz dewiacje
+            close_dev = last_close - last_vmd
+            open_dev = last_open - last_vmd
+            high_dev = last_high - last_vmd
+            low_dev = last_low - last_vmd
+            
+            results.append({
+                'n': n,
+                'date': current_data.index[-1],
+                'close_price': last_close,
+                'vmd_reconstruction': last_vmd,
+                'close_dev': close_dev,
+                'open_dev': open_dev,
+                'high_dev': high_dev,
+                'low_dev': low_dev,
+                'close_dev_pct': (close_dev / last_close) * 100 if last_close != 0 else 0
+            })
+            
+        except Exception as e:
+            print(f"Error at n={n}: {str(e)}")
+            continue
+    
+    return pd.DataFrame(results)
+
+
+def create_deviation_analysis_chart(deviation_results):
+    """Tworzy wykres analizy dewiacji"""
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=(
+            "Close Price vs VMD Reconstruction",
+            "OHLC Deviations from VMD",
+            "Close Deviation Over Time", 
+            "Deviation Statistics"
+        ),
+        specs=[[{"secondary_y": False}, {"secondary_y": False}],
+               [{"secondary_y": False}, {"type": "bar"}]]
+    )
+    
+    # Chart 1: Close vs VMD Reconstruction
+    fig.add_trace(go.Scatter(
+        x=deviation_results['date'],
+        y=deviation_results['close_price'],
+        mode='lines',
+        name='Close Price',
+        line=dict(color='blue', width=2)
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=deviation_results['date'],
+        y=deviation_results['vmd_reconstruction'],
+        mode='lines',
+        name='VMD Reconstruction',
+        line=dict(color='red', width=2, dash='dash')
+    ), row=1, col=1)
+    
+    # Chart 2: OHLC Deviations
+    fig.add_trace(go.Scatter(
+        x=deviation_results['date'],
+        y=deviation_results['open_dev'],
+        mode='lines',
+        name='Open Dev',
+        line=dict(color='green', width=1)
+    ), row=1, col=2)
+    
+    fig.add_trace(go.Scatter(
+        x=deviation_results['date'],
+        y=deviation_results['high_dev'],
+        mode='lines',
+        name='High Dev', 
+        line=dict(color='orange', width=1)
+    ), row=1, col=2)
+    
+    fig.add_trace(go.Scatter(
+        x=deviation_results['date'],
+        y=deviation_results['low_dev'],
+        mode='lines',
+        name='Low Dev',
+        line=dict(color='purple', width=1)
+    ), row=1, col=2)
+    
+    fig.add_trace(go.Scatter(
+        x=deviation_results['date'],
+        y=deviation_results['close_dev'],
+        mode='lines',
+        name='Close Dev',
+        line=dict(color='red', width=2)
+    ), row=1, col=2)
+    
+    # Chart 3: Close Deviation Over Time
+    fig.add_trace(go.Scatter(
+        x=deviation_results['n'],
+        y=deviation_results['close_dev'],
+        mode='lines+markers',
+        name='Close Deviation',
+        line=dict(color='red', width=2),
+        marker=dict(size=4)
+    ), row=2, col=1)
+    
+    # Add zero line
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", 
+                  row=2, col=1, opacity=0.5)
+    
+    # Chart 4: Deviation Statistics
+    dev_stats = {
+        'Close Dev Std': deviation_results['close_dev'].std(),
+        'Close Dev Mean': deviation_results['close_dev'].mean(),
+        'Max Abs Dev': max(abs(deviation_results['close_dev'].min()), 
+                          abs(deviation_results['close_dev'].max())),
+        'Open Dev Std': deviation_results['open_dev'].std()
+    }
+    
+    fig.add_trace(go.Bar(
+        x=list(dev_stats.keys()),
+        y=list(dev_stats.values()),
+        name='Statistics',
+        marker_color=['red', 'blue', 'orange', 'green'],
+        text=[f'{v:.2f}' for v in dev_stats.values()],
+        textposition='outside',
+        showlegend=False
+    ), row=2, col=2)
+    
+    # Update layout
+    fig.update_layout(
+        height=800,
+        template='plotly_white',
+        title_text="Progressive VMD Deviation Analysis - Last Candle Deviations",
+        showlegend=True
+    )
+    
+    # Update axis labels
+    fig.update_xaxes(title_text="Date", row=1, col=1)
+    fig.update_xaxes(title_text="Date", row=1, col=2)
+    fig.update_xaxes(title_text="Data Points (n)", row=2, col=1)
+    fig.update_xaxes(title_text="Metric", row=2, col=2)
+    
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    fig.update_yaxes(title_text="Deviation ($)", row=1, col=2)
+    fig.update_yaxes(title_text="Deviation ($)", row=2, col=1)
+    fig.update_yaxes(title_text="Value", row=2, col=2)
+    
+    return fig
+
+
 def main():
     # Title and description
     st.title("📈 VMD Stock Analyzer with Predictive Stability")
@@ -540,6 +721,11 @@ def main():
         st.subheader("🎬 Time Animation")
         enable_time_slider = st.checkbox("Enable Time Slider", value=False, 
                                         help="Animate data changes over time", key="time_slider_enable")
+        
+        # Advanced analysis
+        st.subheader("📊 Advanced Analysis")
+        show_deviation_analysis = st.checkbox("Show Deviation Analysis", value=True,
+                                             help="Analyze OHLC vs VMD reconstruction deviation", key="deviation_enable")
     
     # Auto-load data when symbol or period changes
     if ('data' not in st.session_state or 
@@ -849,27 +1035,74 @@ def main():
                 })
             
             st.dataframe(pd.DataFrame(ranking_data), use_container_width=True)
-            
-            # Display basic stock info below analysis
-            st.subheader("📊 Stock Metrics")
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                current_price = data['Close'].iloc[-1]
-                st.metric("Current Price", f"${current_price:.2f}")
-            
-            with col2:
-                price_change = data['Close'].iloc[-1] - data['Close'].iloc[0]
-                price_change_pct = (price_change / data['Close'].iloc[0]) * 100
-                st.metric("Price Change", f"${price_change:.2f}", f"{price_change_pct:+.2f}%")
-            
-            with col3:
-                volatility = data['Close'].pct_change().std() * np.sqrt(252) * 100
-                st.metric("Volatility (Annual)", f"{volatility:.1f}%")
-            
-            with col4:
-                volume_avg = data['Volume'].mean()
-                st.metric("Avg Volume", f"{volume_avg/1e6:.1f}M")
+    
+    # Progressive Deviation Analysis
+    if show_deviation_analysis and 'vmd_results' in st.session_state:
+        st.subheader("📈 Progressive VMD Deviation Analysis")
+        st.markdown("""
+        Analysis pokazuje dewiacje ostatniej świecy OHLC od rekonstrukcji VMD dla każdego zakresu od początku do n.
+        """)
+        
+        if len(data) < 30:
+            st.warning("⚠️ Need at least 30 data points for meaningful deviation analysis.")
+        else:
+            with st.spinner("Computing progressive VMD deviations..."):
+                deviation_results = calculate_progressive_vmd_deviations(
+                    data, 
+                    K=K, 
+                    alpha=alpha, 
+                    min_window=25
+                )
+                
+                if not deviation_results.empty:
+                    # Create and display chart
+                    deviation_fig = create_deviation_analysis_chart(deviation_results)
+                    st.plotly_chart(deviation_fig, use_container_width=True)
+                    
+                    # Show summary statistics
+                    st.subheader("📊 Deviation Summary")
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        close_dev_std = deviation_results['close_dev'].std()
+                        st.metric("Close Dev Std", f"${close_dev_std:.2f}")
+                    
+                    with col2:
+                        close_dev_mean = abs(deviation_results['close_dev'].mean())
+                        st.metric("Close Dev Mean", f"${close_dev_mean:.2f}")
+                    
+                    with col3:
+                        max_dev = max(abs(deviation_results['close_dev'].min()), 
+                                    abs(deviation_results['close_dev'].max()))
+                        st.metric("Max Close Dev", f"${max_dev:.2f}")
+                    
+                    with col4:
+                        accuracy = (abs(deviation_results['close_dev']) < close_dev_std).mean() * 100
+                        st.metric("Within 1σ", f"{accuracy:.1f}%")
+                else:
+                    st.error("❌ Failed to compute deviation analysis.")
+    
+    # Display basic stock info below analysis (only if VMD results exist)
+    if 'vmd_results' in st.session_state:
+        st.subheader("📊 Stock Metrics")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            current_price = data['Close'].iloc[-1]
+            st.metric("Current Price", f"${current_price:.2f}")
+        
+        with col2:
+            price_change = data['Close'].iloc[-1] - data['Close'].iloc[0]
+            price_change_pct = (price_change / data['Close'].iloc[0]) * 100
+            st.metric("Price Change", f"${price_change:.2f}", f"{price_change_pct:+.2f}%")
+        
+        with col3:
+            volatility = data['Close'].pct_change().std() * np.sqrt(252) * 100
+            st.metric("Volatility (Annual)", f"{volatility:.1f}%")
+        
+        with col4:
+            volume_avg = data['Volume'].mean()
+            st.metric("Avg Volume", f"{volume_avg/1e6:.1f}M")
     
     # Additional information
     with st.expander("ℹ️ About VMD Analysis"):
