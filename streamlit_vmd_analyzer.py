@@ -537,6 +537,11 @@ def main():
         show_predictive_analysis = st.checkbox("Show Predictive Analysis", value=True, key="show_pred")
         range_selection = st.checkbox("Enable Range Selection", value=False, 
                                      help="Select specific date range for analysis", key="range_sel")
+        
+        # Time animation controls
+        st.subheader("🎬 Time Animation")
+        enable_time_slider = st.checkbox("Enable Time Slider", value=False, 
+                                        help="Animate data changes over time", key="time_slider_enable")
     
     # Auto-load data when symbol or period changes
     if ('data' not in st.session_state or 
@@ -569,8 +574,59 @@ def main():
     # Candlestick chart
     st.subheader("📈 Stock Price Chart")
     
-    # Check if VMD reconstruction exists
+    # Time slider for animation
+    time_end_idx = len(data) - 1
+    if enable_time_slider:
+        time_slider_value = st.slider(
+            "Data End Point", 
+            min_value=20,  # Minimum 20 data points for meaningful analysis
+            max_value=time_end_idx,
+            value=time_end_idx,
+            step=1,
+            help="Slide to animate data changes over time",
+            key="time_slider"
+        )
+        
+        # Show current date (smaller text)
+        current_date = data.index[time_slider_value]
+        st.caption(f"📅 {current_date.strftime('%Y-%m-%d')} ({time_slider_value + 1} candles)")
+        
+        # Trim data based on slider
+        data = data.iloc[:time_slider_value + 1]
+    
+    # Check if VMD reconstruction exists and force refresh if needed
     vmd_reconstruction = None
+    
+    # Force VMD analysis if we have data but no results (initial load issue)
+    if 'vmd_results' not in st.session_state and len(data) >= 20:
+        with st.spinner("Running initial VMD decomposition..."):
+            # Use full data for initial analysis
+            analysis_data_temp = data
+            
+            # Normalize prices
+            prices = analysis_data_temp['Close'].values
+            normalized_prices = (prices - np.mean(prices)) / np.std(prices)
+            
+            # Perform VMD
+            modes, _, frequencies = vmd(normalized_prices, K=K, alpha=alpha)
+            
+            # Ensure consistent lengths
+            min_length = min(len(normalized_prices), len(modes[0]))
+            normalized_prices = normalized_prices[:min_length]
+            modes = [mode[:min_length] for mode in modes]
+            dates = analysis_data_temp.index[:min_length]
+            
+            # Store results in session state
+            st.session_state.vmd_results = {
+                'modes': modes,
+                'frequencies': frequencies,
+                'normalized_prices': normalized_prices,
+                'dates': dates,
+                'original_data': analysis_data_temp.iloc[:min_length]
+            }
+            time_slider_val = st.session_state.get('time_slider', len(data) - 1) if enable_time_slider else len(data)
+            st.session_state.last_vmd_params = (K, alpha, len(data), time_slider_val)
+    
     if 'vmd_results' in st.session_state:
         results = st.session_state.vmd_results
         # Calculate cumulative reconstruction and scale back to price levels
@@ -580,8 +636,18 @@ def main():
         std_price = original_data['Close'].std()
         scaled_reconstruction = cumulative_reconstruction * std_price + mean_price
         
+        # Always use exact length matching - no trimming needed as VMD is recalculated
+        result_dates = results['dates']
+        # Ensure reconstruction matches exactly the current data length
+        current_len = len(data)
+        if len(scaled_reconstruction) != current_len:
+            # This should not happen with proper VMD recalculation, but safety check
+            min_len = min(len(scaled_reconstruction), current_len, len(result_dates))
+            scaled_reconstruction = scaled_reconstruction[:min_len]
+            result_dates = result_dates[:min_len]
+        
         vmd_reconstruction = {
-            'dates': results['dates'],
+            'dates': result_dates,
             'reconstruction': scaled_reconstruction
         }
     
@@ -621,23 +687,44 @@ def main():
         return
     
     # Auto-run VMD Analysis when parameters change or data is loaded
-    current_vmd_params = (K, alpha, len(analysis_data))
-    if ('vmd_results' not in st.session_state or 
-        st.session_state.get('last_vmd_params') != current_vmd_params):
-        
+    # Always use the exact current data length with explicit slider position
+    current_data_len = len(analysis_data)
+    time_slider_pos = st.session_state.get('time_slider', time_end_idx) if enable_time_slider else None
+    current_vmd_params = (K, alpha, current_data_len, symbol.upper(), period, time_slider_pos)
+    
+    # Force VMD recalculation when slider moves
+    should_run_vmd = ('vmd_results' not in st.session_state or 
+                      st.session_state.get('last_vmd_params') != current_vmd_params or
+                      len(st.session_state.get('vmd_results', {}).get('modes', [[]])[0]) != current_data_len)
+    
+    if should_run_vmd:
         with st.spinner("Running VMD decomposition..."):
-            # Normalize prices
+            # Normalize prices for exact current data length
             prices = analysis_data['Close'].values
             normalized_prices = (prices - np.mean(prices)) / np.std(prices)
             
             # Perform VMD
             modes, _, frequencies = vmd(normalized_prices, K=K, alpha=alpha)
             
-            # Ensure consistent lengths
-            min_length = min(len(normalized_prices), len(modes[0]))
-            normalized_prices = normalized_prices[:min_length]
-            modes = [mode[:min_length] for mode in modes]
-            dates = analysis_data.index[:min_length]
+            # Force exact length match - no truncation issues
+            target_length = current_data_len
+            if len(modes[0]) != target_length:
+                # Pad or truncate modes to exact target length
+                adjusted_modes = []
+                for mode in modes:
+                    if len(mode) > target_length:
+                        adjusted_modes.append(mode[:target_length])
+                    elif len(mode) < target_length:
+                        # Pad with zeros if needed (shouldn't happen but safety)
+                        padded_mode = np.zeros(target_length)
+                        padded_mode[:len(mode)] = mode
+                        adjusted_modes.append(padded_mode)
+                    else:
+                        adjusted_modes.append(mode)
+                modes = adjusted_modes
+            
+            normalized_prices = normalized_prices[:target_length]
+            dates = analysis_data.index[:target_length]
             
             # Store results in session state
             st.session_state.vmd_results = {
@@ -645,11 +732,11 @@ def main():
                 'frequencies': frequencies,
                 'normalized_prices': normalized_prices,
                 'dates': dates,
-                'original_data': analysis_data.iloc[:min_length]
+                'original_data': analysis_data.iloc[:target_length]
             }
             st.session_state.last_vmd_params = current_vmd_params
             
-        st.success(f"✅ VMD analysis complete! Extracted {K} modes")
+        st.success(f"✅ VMD analysis complete! Extracted {K} modes for {current_data_len} data points")
     
     # Display VMD results
     if 'vmd_results' in st.session_state:
