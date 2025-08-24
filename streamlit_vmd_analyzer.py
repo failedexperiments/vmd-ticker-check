@@ -240,7 +240,7 @@ def load_stock_data(symbol, period):
         return None
 
 
-def create_candlestick_chart(data, title="Stock Price"):
+def create_candlestick_chart(data, title="Stock Price", vmd_reconstruction=None):
     """Create interactive candlestick chart with Plotly"""
     fig = go.Figure()
     
@@ -276,6 +276,16 @@ def create_candlestick_chart(data, title="Stock Price"):
         line=dict(color='purple', width=2)
     ))
     
+    # Add VMD reconstruction if available
+    if vmd_reconstruction is not None:
+        fig.add_trace(go.Scatter(
+            x=vmd_reconstruction['dates'],
+            y=vmd_reconstruction['reconstruction'],
+            mode='lines',
+            name='VMD Reconstruction',
+            line=dict(color='red', width=3)
+        ))
+    
     # Update layout
     fig.update_layout(
         title=title,
@@ -291,18 +301,12 @@ def create_candlestick_chart(data, title="Stock Price"):
 
 
 def create_vmd_modes_chart(modes, frequencies, original_signal, dates):
-    """Create VMD modes visualization"""
-    fig = make_subplots(
-        rows=2, cols=2,
-        subplot_titles=("Individual VMD Modes", "Cumulative Reconstruction", 
-                       "Mode Frequencies", "Reconstruction Error"),
-        specs=[[{"secondary_y": False}, {"secondary_y": False}],
-               [{"type": "bar"}, {"secondary_y": False}]]
-    )
+    """Create VMD modes visualization - Individual modes only, full width"""
+    fig = go.Figure()
     
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#54A0FF', '#5F27CD']
     
-    # Individual modes (top left)
+    # Individual modes
     for i, (mode, freq) in enumerate(zip(modes, frequencies)):
         fig.add_trace(go.Scatter(
             x=dates,
@@ -310,7 +314,7 @@ def create_vmd_modes_chart(modes, frequencies, original_signal, dates):
             mode='lines',
             name=f'Mode {i+1} (f={freq:.3f})',
             line=dict(color=colors[i % len(colors)], width=2)
-        ), row=1, col=1)
+        ))
     
     # Add original signal
     fig.add_trace(go.Scatter(
@@ -319,63 +323,74 @@ def create_vmd_modes_chart(modes, frequencies, original_signal, dates):
         mode='lines',
         name='Original',
         line=dict(color='black', width=3, dash='dash')
-    ), row=1, col=1)
+    ))
     
-    # Cumulative reconstruction (top right)
-    cumulative = np.zeros_like(modes[0])
-    for i, mode in enumerate(modes):
-        cumulative += mode
-        fig.add_trace(go.Scatter(
-            x=dates,
-            y=cumulative,
-            mode='lines',
-            name=f'Modes 1-{i+1}',
-            line=dict(color=colors[i % len(colors)], width=2),
-            showlegend=False
-        ), row=1, col=2)
+    # Update layout
+    fig.update_layout(
+        title="Individual VMD Modes",
+        yaxis_title="Normalized Amplitude",
+        xaxis_title="Date", 
+        height=500,
+        template='plotly_white',
+        showlegend=True
+    )
     
-    # Original signal on cumulative plot
-    fig.add_trace(go.Scatter(
-        x=dates,
-        y=original_signal,
-        mode='lines',
-        name='Original',
-        line=dict(color='black', width=3, dash='dash'),
-        showlegend=False
-    ), row=1, col=2)
+    return fig
+
+
+def create_mode_frequencies_chart(frequencies):
+    """Create mode frequencies bar chart"""
+    colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FECA57', '#FF9FF3', '#54A0FF', '#5F27CD']
     
-    # Mode frequencies (bottom left)
+    fig = go.Figure()
     fig.add_trace(go.Bar(
         x=[f'Mode {i+1}' for i in range(len(frequencies))],
         y=frequencies,
         name='Frequencies',
         marker_color=colors[:len(frequencies)],
-        showlegend=False
-    ), row=2, col=1)
+        text=[f'{f:.3f}' for f in frequencies],
+        textposition='outside'
+    ))
     
-    # Reconstruction error (bottom right)
+    fig.update_layout(
+        title="VMD Mode Frequencies",
+        yaxis_title="Frequency (Hz)",
+        xaxis_title="Modes",
+        height=400,
+        template='plotly_white',
+        showlegend=False
+    )
+    
+    return fig
+
+
+def create_reconstruction_error_chart(modes, original_signal):
+    """Create reconstruction error chart"""
     reconstruction_error = []
     cumulative = np.zeros_like(modes[0])
-    for mode in modes:
+    
+    for i, mode in enumerate(modes):
         cumulative += mode
         error = np.mean((original_signal - cumulative)**2)
         reconstruction_error.append(error)
     
+    fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=[f'Modes 1-{i+1}' for i in range(len(modes))],
         y=reconstruction_error,
         mode='lines+markers',
         name='MSE Error',
         line=dict(color='red', width=3),
-        marker=dict(size=8),
-        showlegend=False
-    ), row=2, col=2)
+        marker=dict(size=10)
+    ))
     
-    # Update layout
     fig.update_layout(
-        height=800,
+        title="Cumulative Reconstruction Error",
+        yaxis_title="Mean Squared Error",
+        xaxis_title="Cumulative Modes",
+        height=400,
         template='plotly_white',
-        title_text="VMD Analysis Results"
+        showlegend=False
     )
     
     return fig
@@ -493,40 +508,57 @@ def main():
     with st.sidebar:
         st.header("📊 Analysis Parameters")
         
-        # Stock selection
-        symbol = st.text_input("Stock Symbol", value="AAPL", help="Enter stock ticker (e.g., AAPL, TSLA, MSFT)")
+        # Stock selection with auto-load on enter
+        symbol = st.text_input(
+            "Stock Symbol", 
+            value="AAPL", 
+            help="Enter stock ticker (e.g., AAPL, TSLA, MSFT) and press Enter",
+            key="symbol_input"
+        )
+        
         period = st.selectbox(
             "Time Period",
             options=["1mo", "3mo", "6mo", "1y", "2y", "5y"],
             index=2,
-            help="Historical data period"
+            help="Historical data period",
+            key="period_select"
         )
         
         # VMD parameters
         st.subheader("🔧 VMD Parameters")
-        K = st.slider("Number of Modes", min_value=2, max_value=8, value=4, help="Number of VMD modes to extract")
+        K = st.slider("Number of Modes", min_value=2, max_value=8, value=4, 
+                     help="Number of VMD modes to extract", key="K_slider")
         alpha = st.slider("Alpha Parameter", min_value=500, max_value=5000, value=2000, step=100, 
-                         help="Bandwidth constraint (higher = narrower frequency bands)")
+                         help="Bandwidth constraint (higher = narrower frequency bands)", key="alpha_slider")
         
         # Analysis options
         st.subheader("🎛️ Analysis Options")
-        show_individual_modes = st.checkbox("Show Individual Modes", value=True)
-        show_predictive_analysis = st.checkbox("Show Predictive Analysis", value=True)
+        show_individual_modes = st.checkbox("Show Individual Modes", value=True, key="show_modes")
+        show_predictive_analysis = st.checkbox("Show Predictive Analysis", value=True, key="show_pred")
         range_selection = st.checkbox("Enable Range Selection", value=False, 
-                                     help="Select specific date range for analysis")
+                                     help="Select specific date range for analysis", key="range_sel")
     
-    # Load data
-    if st.button("📥 Load Data", type="primary") or 'data' not in st.session_state:
-        with st.spinner(f"Loading {symbol} data..."):
-            data = load_stock_data(symbol.upper(), period)
-            
-            if data is not None and not data.empty:
-                st.session_state.data = data
-                st.session_state.symbol = symbol.upper()
-                st.success(f"✅ Loaded {len(data)} candles for {symbol.upper()}")
-            else:
-                st.error("❌ Failed to load data. Please check the symbol and try again.")
-                return
+    # Auto-load data when symbol or period changes
+    if ('data' not in st.session_state or 
+        st.session_state.get('last_symbol') != symbol.upper() or 
+        st.session_state.get('last_period') != period):
+        
+        if symbol.strip():  # Only load if symbol is not empty
+            with st.spinner(f"Loading {symbol} data..."):
+                data = load_stock_data(symbol.upper(), period)
+                
+                if data is not None and not data.empty:
+                    st.session_state.data = data
+                    st.session_state.symbol = symbol.upper()
+                    st.session_state.last_symbol = symbol.upper()
+                    st.session_state.last_period = period
+                    st.success(f"✅ Loaded {len(data)} candles for {symbol.upper()}")
+                    # Clear previous VMD results when loading new data
+                    if 'vmd_results' in st.session_state:
+                        del st.session_state.vmd_results
+                else:
+                    st.error("❌ Failed to load data. Please check the symbol and try again.")
+                    return
     
     if 'data' not in st.session_state:
         st.info("👆 Please load stock data to begin analysis")
@@ -534,29 +566,30 @@ def main():
     
     data = st.session_state.data
     
-    # Display basic stock info
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        current_price = data['Close'].iloc[-1]
-        st.metric("Current Price", f"${current_price:.2f}")
-    
-    with col2:
-        price_change = data['Close'].iloc[-1] - data['Close'].iloc[0]
-        price_change_pct = (price_change / data['Close'].iloc[0]) * 100
-        st.metric("Price Change", f"${price_change:.2f}", f"{price_change_pct:+.2f}%")
-    
-    with col3:
-        volatility = data['Close'].pct_change().std() * np.sqrt(252) * 100
-        st.metric("Volatility (Annual)", f"{volatility:.1f}%")
-    
-    with col4:
-        volume_avg = data['Volume'].mean()
-        st.metric("Avg Volume", f"{volume_avg/1e6:.1f}M")
-    
     # Candlestick chart
     st.subheader("📈 Stock Price Chart")
-    candlestick_fig = create_candlestick_chart(data, f"{st.session_state.symbol} Stock Price")
+    
+    # Check if VMD reconstruction exists
+    vmd_reconstruction = None
+    if 'vmd_results' in st.session_state:
+        results = st.session_state.vmd_results
+        # Calculate cumulative reconstruction and scale back to price levels
+        cumulative_reconstruction = np.sum(results['modes'], axis=0)
+        original_data = results['original_data']
+        mean_price = original_data['Close'].mean()
+        std_price = original_data['Close'].std()
+        scaled_reconstruction = cumulative_reconstruction * std_price + mean_price
+        
+        vmd_reconstruction = {
+            'dates': results['dates'],
+            'reconstruction': scaled_reconstruction
+        }
+    
+    candlestick_fig = create_candlestick_chart(
+        data, 
+        f"{st.session_state.symbol} Stock Price", 
+        vmd_reconstruction=vmd_reconstruction
+    )
     
     # Add range selection if enabled
     if range_selection:
@@ -587,8 +620,11 @@ def main():
         st.warning("⚠️ Selected range too small. Please select at least 10 data points.")
         return
     
-    # VMD Analysis
-    if st.button("🔬 Run VMD Analysis", type="primary"):
+    # Auto-run VMD Analysis when parameters change or data is loaded
+    current_vmd_params = (K, alpha, len(analysis_data))
+    if ('vmd_results' not in st.session_state or 
+        st.session_state.get('last_vmd_params') != current_vmd_params):
+        
         with st.spinner("Running VMD decomposition..."):
             # Normalize prices
             prices = analysis_data['Close'].values
@@ -611,6 +647,7 @@ def main():
                 'dates': dates,
                 'original_data': analysis_data.iloc[:min_length]
             }
+            st.session_state.last_vmd_params = current_vmd_params
             
         st.success(f"✅ VMD analysis complete! Extracted {K} modes")
     
@@ -621,6 +658,8 @@ def main():
         # VMD modes visualization
         if show_individual_modes:
             st.subheader("🌊 VMD Modes Analysis")
+            
+            # Individual modes chart (full width)
             vmd_fig = create_vmd_modes_chart(
                 results['modes'], 
                 results['frequencies'], 
@@ -628,6 +667,20 @@ def main():
                 results['dates']
             )
             st.plotly_chart(vmd_fig, use_container_width=True)
+            
+            # Additional charts in two columns
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                freq_fig = create_mode_frequencies_chart(results['frequencies'])
+                st.plotly_chart(freq_fig, use_container_width=True)
+                
+            with col2:
+                error_fig = create_reconstruction_error_chart(
+                    results['modes'], 
+                    results['normalized_prices']
+                )
+                st.plotly_chart(error_fig, use_container_width=True)
         
         # Predictive stability analysis
         if show_predictive_analysis:
@@ -705,6 +758,27 @@ def main():
                 })
             
             st.dataframe(pd.DataFrame(ranking_data), use_container_width=True)
+            
+            # Display basic stock info below analysis
+            st.subheader("📊 Stock Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                current_price = data['Close'].iloc[-1]
+                st.metric("Current Price", f"${current_price:.2f}")
+            
+            with col2:
+                price_change = data['Close'].iloc[-1] - data['Close'].iloc[0]
+                price_change_pct = (price_change / data['Close'].iloc[0]) * 100
+                st.metric("Price Change", f"${price_change:.2f}", f"{price_change_pct:+.2f}%")
+            
+            with col3:
+                volatility = data['Close'].pct_change().std() * np.sqrt(252) * 100
+                st.metric("Volatility (Annual)", f"{volatility:.1f}%")
+            
+            with col4:
+                volume_avg = data['Volume'].mean()
+                st.metric("Avg Volume", f"{volume_avg/1e6:.1f}M")
     
     # Additional information
     with st.expander("ℹ️ About VMD Analysis"):

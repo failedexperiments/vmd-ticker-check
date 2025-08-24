@@ -176,23 +176,19 @@ class EnhancedVMDAnalyzer:
         """Setup the plot layout"""
         self.fig.clear()
         
-        # Create grid layout: 2 rows, candlestick chart takes more space
-        gs = self.fig.add_gridspec(3, 2, height_ratios=[2, 1, 0.3], hspace=0.3, wspace=0.3)
+        # Create grid layout: 3 rows, overlayed signals chart takes full width
+        gs = self.fig.add_gridspec(3, 1, height_ratios=[2, 1, 0.3], hspace=0.3)
         
         # Main candlestick chart (top row, full width)
-        self.ax_main = self.fig.add_subplot(gs[0, :])
+        self.ax_main = self.fig.add_subplot(gs[0])
         self.ax_main.set_title("Stock Price - Click and drag to select range for VMD analysis", fontsize=12, fontweight='bold')
         
-        # VMD modes plot (middle left)
-        self.ax_modes = self.fig.add_subplot(gs[1, 0])
+        # VMD modes plot (middle, full width)
+        self.ax_modes = self.fig.add_subplot(gs[1])
         self.ax_modes.set_title("Individual VMD Modes", fontsize=10)
         
-        # Cumulative plot (middle right)  
-        self.ax_cumulative = self.fig.add_subplot(gs[1, 1])
-        self.ax_cumulative.set_title("Cumulative VMD Reconstruction", fontsize=10)
-        
         # Statistics panel (bottom, full width)
-        self.ax_stats = self.fig.add_subplot(gs[2, :])
+        self.ax_stats = self.fig.add_subplot(gs[2])
         self.ax_stats.axis('off')
         
         self.canvas.draw()
@@ -271,6 +267,20 @@ class EnhancedVMDAnalyzer:
         self.ax_main.plot(range(len(ma20)), ma20, color='orange', linewidth=1.5, alpha=0.7, label='MA20')
         self.ax_main.plot(range(len(ma50)), ma50, color='purple', linewidth=1.5, alpha=0.7, label='MA50')
         
+        # Add cumulative reconstruction if VMD analysis was performed
+        if hasattr(self, 'cumulative_reconstruction') and self.selected_range:
+            x_start, x_end = self.selected_range
+            x_range = range(x_start, x_end + 1)
+            
+            # Scale reconstruction back to price levels
+            selected_closes = closes[x_start:x_end + 1]
+            mean_price = np.mean(selected_closes)
+            std_price = np.std(selected_closes)
+            scaled_reconstruction = self.cumulative_reconstruction * std_price + mean_price
+            
+            self.ax_main.plot(x_range, scaled_reconstruction, color='red', linewidth=2, 
+                             alpha=0.8, label='VMD Reconstruction')
+        
         self.ax_main.set_title(f"{self.symbol_var.get()} - Click and drag to select range for VMD analysis", 
                               fontsize=12, fontweight='bold')
         self.ax_main.set_ylabel("Price ($)", fontsize=10)
@@ -326,19 +336,22 @@ class EnhancedVMDAnalyzer:
             
         self.selected_range = None
         
+        # Clear cumulative reconstruction data
+        if hasattr(self, 'cumulative_reconstruction'):
+            delattr(self, 'cumulative_reconstruction')
+        
         # Clear analysis plots
         self.ax_modes.clear()
         self.ax_modes.set_title("Individual VMD Modes", fontsize=10)
         self.ax_modes.text(0.5, 0.5, "Select a range and click 'Analyze VMD'", 
                           ha='center', va='center', transform=self.ax_modes.transAxes, fontsize=10)
         
-        self.ax_cumulative.clear() 
-        self.ax_cumulative.set_title("Cumulative VMD Reconstruction", fontsize=10)
-        self.ax_cumulative.text(0.5, 0.5, "Awaiting VMD analysis...", 
-                               ha='center', va='center', transform=self.ax_cumulative.transAxes, fontsize=10)
-        
         self.ax_stats.clear()
         self.ax_stats.axis('off')
+        
+        # Redraw candlestick without reconstruction
+        if self.data is not None:
+            self.plot_candlestick()
         
         self.status_var.set("Selection cleared")
         self.canvas.draw()
@@ -404,7 +417,6 @@ class EnhancedVMDAnalyzer:
         """Plot comprehensive VMD analysis results"""
         # Clear previous plots
         self.ax_modes.clear()
-        self.ax_cumulative.clear()
         self.ax_stats.clear()
         self.ax_stats.axis('off')
         
@@ -421,7 +433,10 @@ class EnhancedVMDAnalyzer:
         normalized_prices_plot = normalized_prices[:plot_length]
         modes_plot = [mode[:plot_length] for mode in modes]
         
-        # Individual modes plot
+        # Store cumulative reconstruction for main chart
+        self.cumulative_reconstruction = np.sum(modes_plot, axis=0)
+        
+        # Individual modes plot (now takes full width)
         for i, (mode, freq) in enumerate(zip(modes_plot, frequencies)):
             color = self.colors[i % len(self.colors)]
             self.ax_modes.plot(x_range, mode, color=color, linewidth=1.5, 
@@ -431,40 +446,23 @@ class EnhancedVMDAnalyzer:
                           linestyle='--', alpha=0.7, label='Original')
         self.ax_modes.set_title("Individual VMD Modes", fontsize=10, fontweight='bold')
         self.ax_modes.set_ylabel("Amplitude", fontsize=8)
+        self.ax_modes.set_xlabel("Time", fontsize=8)
         self.ax_modes.grid(True, alpha=0.3)
-        self.ax_modes.legend(fontsize=6, bbox_to_anchor=(0.98, -0.05), loc='upper right', ncol=3)
-        
-        # Cumulative reconstruction plot
-        cumulative = np.zeros_like(modes_plot[0])
-        
-        for i, mode in enumerate(modes_plot):
-            cumulative += mode
-            color = self.colors[i % len(self.colors)]
-            
-            self.ax_cumulative.plot(x_range, cumulative, color=color, linewidth=2, 
-                                  alpha=0.8, label=f'Modes 1-{i+1}')
-        
-        # Original signal
-        self.ax_cumulative.plot(x_range, normalized_prices_plot, color='black', linewidth=2,
-                               linestyle='--', alpha=0.7, label='Original')
-        
-        self.ax_cumulative.set_title("Cumulative VMD Reconstruction", fontsize=10, fontweight='bold')
-        self.ax_cumulative.set_ylabel("Amplitude", fontsize=8)
-        self.ax_cumulative.set_xlabel("Time", fontsize=8)
-        self.ax_cumulative.grid(True, alpha=0.3)
-        self.ax_cumulative.legend(fontsize=6, bbox_to_anchor=(0.98, -0.05), loc='upper right', ncol=3)
+        self.ax_modes.legend(fontsize=8, bbox_to_anchor=(1.02, 1), loc='upper left')
         
         # Statistics and information panel
         self.plot_statistics(modes_plot, frequencies, selected_data, normalized_prices_plot)
         
-        # Format x-axis for both plots
-        for ax in [self.ax_modes, self.ax_cumulative]:
-            if len(dates) > 10:
-                step = len(dates) // 8
-                x_ticks = range(0, len(dates), step)
-                x_labels = [dates[i].strftime('%m/%d') for i in x_ticks]
-                ax.set_xticks(x_ticks)
-                ax.set_xticklabels(x_labels, rotation=45, fontsize=7)
+        # Format x-axis
+        if len(dates) > 10:
+            step = len(dates) // 8
+            x_ticks = range(0, len(dates), step)
+            x_labels = [dates[i].strftime('%m/%d') for i in x_ticks]
+            self.ax_modes.set_xticks(x_ticks)
+            self.ax_modes.set_xticklabels(x_labels, rotation=45, fontsize=7)
+        
+        # Update main chart to show reconstruction
+        self.plot_candlestick()
         
         self.canvas.draw()
         
